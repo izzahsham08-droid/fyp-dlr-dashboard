@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DLR Monitoring Dashboard — 2021</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.27.0/plotly.min.js" defer></script>
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body>
+
+<!-- ── HEADER ─────────────────────────────────────── -->
+<header>
+  <div class="header-inner">
+    <div>
+      <h1>Dynamic Line Rating Monitoring System</h1>
+      <p class="subtitle">Web-Based DLR Monitoring · IEEE Std 738-2012 · Year 2021</p>
+    </div>
+    <div class="header-badge" id="mode-badge">Normal</div>
+  </div>
+</header>
+
+<!-- ── TAB NAVIGATION ─────────────────────── -->
+<nav class="tab-nav">
+  <button class="tab-btn active" data-tab="monitoring">📊 DLR Monitoring</button>
+  <button class="tab-btn" data-tab="risk">⚡ Operational Risk Monitor</button>
+  <button class="tab-btn" data-tab="location">📍 Study Location</button>
+</nav>
+
+<!-- ── MONITORING TAB ─────────────────────── -->
+<div id="tab-monitoring" class="tab-pane active">
+
+<!-- ── CONTROLS ───────────────────────────────────── -->
+<section class="controls-bar">
+  <div class="control-group">
+    <label for="mon-view">View</label>
+    <select id="mon-view">
+      <option value="yearly">Yearly (2021)</option>
+      <option value="monthly">Monthly</option>
+      <option value="daily">Daily</option>
+    </select>
+  </div>
+  <div class="control-group" id="mon-month-group" style="display:none">
+    <label for="mon-month-sel">Month</label>
+    <select id="mon-month-sel">
+      <option value="1">January</option><option value="2">February</option>
+      <option value="3">March</option><option value="4">April</option>
+      <option value="5">May</option><option value="6">June</option>
+      <option value="7">July</option><option value="8">August</option>
+      <option value="9">September</option><option value="10">October</option>
+      <option value="11">November</option><option value="12">December</option>
+    </select>
+  </div>
+  <div class="control-group" id="mon-date-group" style="display:none">
+    <label for="mon-date-sel">Date</label>
+    <select id="mon-date-sel"></select>
+  </div>
+  <div class="control-group">
+    <label>Condition</label>
+    <div class="toggle-group" id="mode-toggle-group">
+      <button class="toggle active" data-mode="all">All</button>
+      <button class="toggle" data-mode="normal">Normal</button>
+      <button class="toggle heatwave-btn" data-mode="heatwave">Heatwave ≥32°C</button>
+    </div>
+  </div>
+  <div class="control-group">
+    <button id="mon-refresh-btn" onclick="refreshMonitoring()">↻ Refresh</button>
+  </div>
+</section>
+
+<!-- ── KPI CARDS ──────────────────────────────────── -->
+<section class="kpi-grid">
+  <div class="kpi-card">
+    <div class="kpi-label">SLR (Fixed Rating)</div>
+    <div class="kpi-value">1434 <span class="kpi-unit">A</span></div>
+    <div class="kpi-sub">Static conservative baseline</div>
+  </div>
+  <div class="kpi-card highlight-normal">
+    <div class="kpi-label">Mean DLR — Normal</div>
+    <div class="kpi-value" id="kpi-dlr-normal">— <span class="kpi-unit">A</span></div>
+    <div class="kpi-sub" id="kpi-dlr-normal-diff">vs SLR</div>
+  </div>
+  <div class="kpi-card highlight-heat">
+    <div class="kpi-label">Mean DLR — Heatwave</div>
+    <div class="kpi-value" id="kpi-dlr-heat">— <span class="kpi-unit">A</span></div>
+    <div class="kpi-sub" id="kpi-dlr-heat-diff">vs SLR</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Hours DLR &gt; SLR</div>
+    <div class="kpi-value" id="kpi-above-slr">—<span class="kpi-unit">%</span></div>
+    <div class="kpi-sub" id="kpi-above-hrs">of selected period</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Heatwave Hours</div>
+    <div class="kpi-value" id="kpi-hw-hours">—</div>
+    <div class="kpi-sub" id="kpi-hw-sub">Ta ≥ 32°C</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Mean Sensor DLR</div>
+    <div class="kpi-value" id="kpi-sensor-dlr">— <span class="kpi-unit">A</span></div>
+    <div class="kpi-sub" id="kpi-period-label">Measured ampacity</div>
+  </div>
+</section>
+
+<!-- ── MAIN TIME SERIES (Plotly) ─────────────────── -->
+<section class="chart-section">
+  <div class="chart-card full-width">
+    <div class="chart-header">
+      <span class="chart-title" id="mon-chart-title">Ampacity — DLR Calculated vs DLR Sensor vs SLR</span>
+    </div>
+    <div id="mon-plotly-chart" style="width:100%;height:520px;"></div>
+  </div>
+</section>
+
+<!-- ── TEMPERATURE + WIND ────────────────────────── -->
+<section class="chart-section two-col">
+  <div class="chart-card">
+    <div class="chart-header">
+      <span class="chart-title">Temperature Profile</span>
+      <div class="legend-row">
+        <span class="leg-dot" style="background:#dc2626"></span>Conductor Ts
+        <span class="leg-dot" style="background:#f97316"></span>Ambient Ta
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:200px">
+      <canvas id="tempChart" role="img"
+        aria-label="Conductor and ambient temperature over the selected period">
+      </canvas>
+    </div>
+  </div>
+  <div class="chart-card">
+    <div class="chart-header">
+      <span class="chart-title">Wind Speed &amp; Load</span>
+      <div class="legend-row">
+        <span class="leg-dot" style="background:#0891b2"></span>Wind (m/s)
+        <span class="leg-dot" style="background:#7c3aed"></span>Load (A)
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:200px">
+      <canvas id="windChart" role="img"
+        aria-label="Wind speed and load current over the selected period">
+      </canvas>
+    </div>
+  </div>
+</section>
+
+<!-- ── MONTHLY + HEATWAVE COMPARE ───────────────── -->
+<section class="chart-section two-col">
+  <div class="chart-card">
+    <div class="chart-header">
+      <span class="chart-title">Monthly Mean DLR vs SLR</span>
+    </div>
+    <div class="chart-wrap" style="height:220px">
+      <canvas id="monthlyChart" role="img"
+        aria-label="Monthly mean DLR calculated and sensor values compared to SLR">
+      </canvas>
+    </div>
+  </div>
+  <div class="chart-card">
+    <div class="chart-header">
+      <span class="chart-title">Normal vs Heatwave Comparison</span>
+    </div>
+    <div class="chart-wrap" style="height:220px">
+      <canvas id="hwCompareChart" role="img"
+        aria-label="Bar chart comparing mean DLR values during normal and heatwave conditions">
+      </canvas>
+    </div>
+  </div>
+</section>
+
+<!-- ── VALIDATION ────────────────────────────────── -->
+<section class="chart-section two-col">
+  <div class="chart-card">
+    <div class="chart-header">
+      <span class="chart-title">Model Validation — Calculated vs Sensor DLR</span>
+      <div class="legend-row">
+        <span class="leg-dot" style="background:#2563eb"></span>Normal
+        <span class="leg-dot" style="background:#dc2626"></span>Heatwave
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:220px">
+      <canvas id="scatterChart" role="img"
+        aria-label="Scatter plot of IEEE 738 calculated DLR vs sensor DLR">
+      </canvas>
+    </div>
+  </div>
+  <div class="chart-card">
+    <div class="chart-header">
+      <span class="chart-title">Validation Metrics</span>
+    </div>
+    <div class="metrics-table" id="metrics-table">
+      <div class="metrics-loading">Loading…</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── DLR vs SLR GAIN ───────────────────────────── -->
+<section class="chart-section">
+  <div class="chart-card full-width">
+    <div class="chart-header">
+      <span class="chart-title">DLR Capacity Gain / Reduction vs SLR (1434 A)</span>
+      <div class="legend-row">
+        <span class="leg-dot" style="background:#16a34a"></span>Capacity gain (DLR &gt; SLR)
+        <span class="leg-dot" style="background:#dc2626"></span>Capacity reduction (DLR &lt; SLR)
+      </div>
+    </div>
+    <div class="chart-wrap" style="height:200px">
+      <canvas id="gainChart" role="img"
+        aria-label="Daily DLR capacity gain or reduction relative to the SLR of 1434 A">
+      </canvas>
+    </div>
+  </div>
+</section>
+
+
+
+<!-- ── WEATHER INFLUENCE ANALYSIS ────────────── -->
+<section class="chart-section">
+  <div class="chart-card full-width">
+    <div class="chart-header">
+      <span class="chart-title">🌬️ Wind Velocity &amp; Direction Analysis</span>
+      <div class="wind-controls">
+        <div class="control-group">
+          <label for="wind-month-sel">Month</label>
+          <select id="wind-month-sel">
+            <option value="0">Full Year</option>
+            <option value="1">January</option><option value="2">February</option>
+            <option value="3">March</option><option value="4">April</option>
+            <option value="5">May</option><option value="6">June</option>
+            <option value="7">July</option><option value="8">August</option>
+            <option value="9">September</option><option value="10">October</option>
+            <option value="11">November</option><option value="12">December</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="wind-colour-sel">Colour by</label>
+          <select id="wind-colour-sel">
+            <option value="dlr">DLR Calculated (A)</option>
+            <option value="risk">Risk Level</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <button id="wind-refresh-btn" onclick="loadWindAnalysis()">↻ Refresh</button>
+        </div>
+      </div>
+    </div>
+    <div class="wind-layout">
+      <div id="wind-polar-chart" style="width:100%;height:460px;"></div>
+      <div class="wind-explanation">
+        <div class="wind-explain-title">Why Wind Matters for DLR</div>
+        <p>Wind provides <b>convective cooling</b> to the overhead conductor.
+           Higher wind speed increases heat dissipation, allowing more current
+           to flow safely — raising the DLR ampacity.</p>
+        <p>However, the cooling effect also depends on <b>wind direction</b>
+           relative to the conductor axis. Perpendicular wind provides maximum
+           cooling; parallel wind provides minimum cooling (IEEE Std 738-2012, Eq. 4).</p>
+        <p>This polar chart shows wind speed (radial axis) and wind direction
+           (angular axis) for each hourly observation. Points coloured by
+           DLR Calculated or Risk Level.</p>
+        <div class="wind-legend" id="wind-legend-box"></div>
+        <div class="wind-stat-row" id="wind-stats"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div><!-- end tab-monitoring -->
+
+<!-- ── RISK MONITOR TAB ────────────────────── -->
+<div id="tab-risk" class="tab-pane" style="display:none">
+
+  <!-- Risk Controls -->
+  <div class="risk-controls">
+    <div class="control-group">
+      <label for="risk-view">View</label>
+      <select id="risk-view">
+        <option value="yearly">Yearly (2021)</option>
+        <option value="monthly">Monthly</option>
+        <option value="daily">Daily</option>
+      </select>
+    </div>
+    <div class="control-group" id="risk-month-group" style="display:none">
+      <label for="risk-month">Month</label>
+      <select id="risk-month"></select>
+    </div>
+    <div class="control-group" id="risk-date-group" style="display:none">
+      <label for="risk-date">Date</label>
+      <select id="risk-date"></select>
+    </div>
+    <button id="risk-refresh" onclick="loadRiskMonitor()">↻ Refresh</button>
+  </div>
+
+  <!-- Risk Summary Cards -->
+  <div class="risk-kpi-grid" id="risk-kpi-grid">
+    <div class="risk-kpi">
+      <div class="risk-kpi-label">Max Load Current</div>
+      <div class="risk-kpi-value" id="rk-max-load">—</div>
+      <div class="risk-kpi-sub">A</div>
+    </div>
+    <div class="risk-kpi">
+      <div class="risk-kpi-label">Mean Load Current</div>
+      <div class="risk-kpi-value" id="rk-mean-load">—</div>
+      <div class="risk-kpi-sub">A</div>
+    </div>
+    <div class="risk-kpi">
+      <div class="risk-kpi-label">Max DLR Calculated</div>
+      <div class="risk-kpi-value" id="rk-max-dlrc">—</div>
+      <div class="risk-kpi-sub">A</div>
+    </div>
+    <div class="risk-kpi">
+      <div class="risk-kpi-label">Mean DLR Calculated</div>
+      <div class="risk-kpi-value" id="rk-mean-dlrc">—</div>
+      <div class="risk-kpi-sub">A</div>
+    </div>
+    <div class="risk-kpi risk-kpi-warn">
+      <div class="risk-kpi-label">Min Margin to DLR</div>
+      <div class="risk-kpi-value" id="rk-min-margin">—</div>
+      <div class="risk-kpi-sub">%</div>
+    </div>
+    <div class="risk-kpi risk-kpi-danger">
+      <div class="risk-kpi-label">Risky / Very Risky Hours</div>
+      <div class="risk-kpi-value" id="rk-risky-pct">—</div>
+      <div class="risk-kpi-sub">% of period</div>
+    </div>
+    <div class="risk-kpi">
+      <div class="risk-kpi-label">Load &gt; 80% SLR</div>
+      <div class="risk-kpi-value" id="rk-above80">—</div>
+      <div class="risk-kpi-sub">% of hours</div>
+    </div>
+    <div class="risk-kpi">
+      <div class="risk-kpi-label">Load &gt; 90% SLR</div>
+      <div class="risk-kpi-value" id="rk-above90">—</div>
+      <div class="risk-kpi-sub">% of hours</div>
+    </div>
+  </div>
+
+  <!-- Risk Distribution Badges — clickable to highlight on chart -->
+  <div class="risk-dist" id="risk-dist">
+    <span class="rdot safe" title="Safe hours — no highlight">
+      ✅ Safe: <b id="rd-safe">—</b>
+    </span>
+    <button class="rdot caution" onclick="toggleHighlight('Caution')"
+            title="Click to highlight Caution points on chart">
+      ⚠ Caution: <b id="rd-caution">—</b>
+    </button>
+    <button class="rdot risky" onclick="toggleHighlight('Risky')"
+            title="Click to highlight Risky points on chart">
+      🔶 Risky: <b id="rd-risky">—</b>
+    </button>
+    <button class="rdot very-risky" onclick="toggleHighlight('Very Risky')"
+            title="Click to highlight Very Risky points on chart">
+      🔴 Very Risky: <b id="rd-vr">—</b>
+    </button>
+    <button class="rdot all-risk" onclick="toggleHighlight('All Risk')"
+            title="Click to highlight ALL non-safe points">
+      🔍 Show All Risk
+    </button>
+  </div>
+
+  <!-- Main Plotly Chart -->
+  <div class="risk-chart-wrap">
+    <div id="risk-plotly-chart" style="width:100%;height:520px;"></div>
+  </div>
+
+</div><!-- end tab-risk -->
+
+<!-- ── STUDY LOCATION TAB ──────────────────── -->
+<div id="tab-location" class="tab-pane" style="display:none">
+
+  <div class="study-wrapper">
+
+    <!-- LEFT: Map -->
+    <div class="study-map-card">
+      <div class="study-map-title">📍 Ayer Tawar – Pantai Remis 275 kV Line</div>
+      <div id="study-map" style="width:100%;height:420px;border-radius:8px;"></div>
+      <p class="study-map-caption">
+        Map centred on Manjung, Perak, Malaysia · Marker at 4.3962° N, 100.7096° E
+      </p>
+    </div>
+
+    <!-- RIGHT: Info card -->
+    <div class="study-info-col">
+
+      <div class="study-info-card">
+        <div class="study-info-header">🔬 Study Site</div>
+        <table class="study-info-table">
+          <tr>
+            <td class="sit-label">Line</td>
+            <td class="sit-value">Ayer Tawar – Pantai Remis 275 kV</td>
+          </tr>
+          <tr>
+            <td class="sit-label">District</td>
+            <td class="sit-value">Manjung</td>
+          </tr>
+          <tr>
+            <td class="sit-label">State</td>
+            <td class="sit-value">Perak, Malaysia</td>
+          </tr>
+          <tr>
+            <td class="sit-label">Latitude</td>
+            <td class="sit-value">4.396200° N</td>
+          </tr>
+          <tr>
+            <td class="sit-label">Longitude</td>
+            <td class="sit-value">100.7096° E</td>
+          </tr>
+          <tr>
+            <td class="sit-label">Voltage</td>
+            <td class="sit-value">275 kV Transmission Line</td>
+          </tr>
+          <tr>
+            <td class="sit-label">Authority</td>
+            <td class="sit-value">Tenaga Nasional Berhad (TNB)</td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="study-info-card study-risk-card">
+        <div class="study-info-header">⚠ Engineering Concern</div>
+        <table class="study-info-table">
+          <tr>
+            <td class="sit-label">Issue</td>
+            <td class="sit-value">Risk of ground clearance violation</td>
+          </tr>
+          <tr>
+            <td class="sit-label">Clearance limit</td>
+            <td class="sit-value">7 metres minimum</td>
+          </tr>
+          <tr>
+            <td class="sit-label">Max conductor temp</td>
+            <td class="sit-value">75°C</td>
+          </tr>
+          <tr>
+            <td class="sit-label">SLR (fixed rating)</td>
+            <td class="sit-value">1,434 A</td>
+          </tr>
+          <tr>
+            <td class="sit-label">DLR approach</td>
+            <td class="sit-value">IEEE Std 738-2012 thermal balance</td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="study-explain-box">
+        <p>
+          This study focuses on the <b>Ayer Tawar–Pantai Remis 275 kV transmission line</b>
+          in Manjung, Perak, Malaysia. The critical section was identified by
+          <b>Tenaga Nasional Berhad (TNB)</b> as having potential risk of violating the
+          required <b>7-metre ground clearance limit</b> when conductor temperature
+          approaches the maximum allowable limit of 75°C.
+        </p>
+        <p>
+          The Dynamic Line Rating system monitors real-time weather and operating
+          conditions to provide a more accurate ampacity estimate than the fixed
+          Static Line Rating, helping operators avoid thermal overload while
+          maximising grid transfer capacity — especially under heatwave conditions.
+        </p>
+      </div>
+
+    </div><!-- end study-info-col -->
+  </div><!-- end study-wrapper -->
+
+</div><!-- end tab-location -->
+
+
+<!-- ── FOOTER ─────────────────────────────────────── -->
+<footer>
+  <p>FYP — Web-Based Dynamic Line Rating System for Optimizing Grid Transfer Capacity under Heatwave Conditions</p>
+  <p>IEEE Std 738-2012 · SLR = 1434 A · Heatwave threshold Ta ≥ 32°C · Dataset: 2021</p>
+</footer>
+</body>
+</html>

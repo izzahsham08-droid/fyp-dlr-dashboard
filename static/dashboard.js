@@ -162,8 +162,8 @@ async function loadTimeSeries() {
     `Ambient Temp   : ${fv(ta ? ta[i] : null, 1)} °C`,
   ].join('<br>'));
 
-  // SLR % reference lines
-  const slrPctLines = [90, 80, 70, 60].map(pct => ({
+  // SLR % reference lines — above SLR to show DLR capacity gain
+  const slrPctLines = [110, 120, 130, 140].map(pct => ({
     x: [labels[0], labels[n-1]], y: [SLR*pct/100, SLR*pct/100],
     name: `${pct}% SLR (${(SLR*pct/100).toFixed(0)} A)`,
     type: 'scatter', mode: 'lines',
@@ -244,7 +244,7 @@ async function loadTimeSeries() {
       { xref:'paper', yref:'y', x:1.002, y:SLR,
         text:'SLR = 1434 A', showarrow:false,
         font:{ color:'#dc2626', size:10 }, xanchor:'left' },
-      ...[90, 80, 70, 60].map(pct => ({
+      ...[110, 120, 130, 140].map(pct => ({
         xref:'paper', yref:'y', x:1.002, y:SLR * pct / 100,
         text:`${pct}% (${(SLR * pct / 100).toFixed(0)} A)`,
         showarrow:false, font:{ color:'#94a3b8', size:9 }, xanchor:'left',
@@ -1295,7 +1295,7 @@ function initStudyMap() {
       </table>
       <div style="margin-top:8px;padding:6px 8px;background:#fef2f2;border-left:3px solid #dc2626;
                   border-radius:0 4px 4px 0;font-size:11px;color:#991b1b">
-        ⚠ Risk of 7 m ground clearance violation at T<sub>max</sub> = 75°C
+        ⚠ Risk of 7 m ground clearance violation due to conductor sag at T<sub>max</sub> = 75°C
       </div>
     </div>`);
 

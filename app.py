@@ -67,33 +67,55 @@ def index():
 def api_summary():
     """
     KPI cards for the DLR Monitoring tab.
-    Now accepts the same month/mode filters as /api/timeseries
-    so cards update whenever the user changes Month or Condition.
+    Supports three filter levels: year / month / specific date.
     Query params:
-      month — 0 = full year, 1-12 = specific month
+      month — 0 = full year, 1-12 = specific month (ignored when date is set)
+      date  — 'YYYY-MM-DD' for daily view (overrides month)
       mode  — 'all' | 'normal' | 'heatwave'
     """
     month = request.args.get('month', 0, type=int)
+    date  = request.args.get('date',  None)
     mode  = request.args.get('mode',  'all')
 
-    df = filter_df(month, mode)
+    # Base: always restrict to year 2021
+    df = DF[DF['datetime'].dt.year == 2021].copy()
 
-    # Within the filtered slice, split by heatwave flag
-    hw  = df[df['is_heatwave'] == 1]
-    nrm = df[df['is_heatwave'] == 0]
+    # Period filter
+    if date:
+        df = df[df['datetime'].dt.strftime('%Y-%m-%d') == date]
+    elif month and month != 0:
+        df = df[df['datetime'].dt.month == month]
+
+    # Condition filter
+    if mode == 'heatwave':
+        df = df[df['is_heatwave'] == 1]
+    elif mode == 'normal':
+        df = df[df['is_heatwave'] == 0]
+
+    # Always split into hw/normal for card values regardless of mode
+    # (so we can show both Mean DLR Normal and Mean DLR Heatwave)
+    base_df = DF[DF['datetime'].dt.year == 2021].copy()
+    if date:
+        base_df = base_df[base_df['datetime'].dt.strftime('%Y-%m-%d') == date]
+    elif month and month != 0:
+        base_df = base_df[base_df['datetime'].dt.month == month]
+
+    hw  = base_df[base_df['is_heatwave'] == 1]
+    nrm = base_df[base_df['is_heatwave'] == 0]
     valid_dlr = df['dlr'].dropna()
 
-    # Guard against empty slices (e.g. heatwave filter on a cool month)
     def safe_mean(s):
         return round(float(s.mean()), 1) if len(s) > 0 and not s.isna().all() else None
     def safe_pct(mask, total):
         return round(float(mask.mean() * 100), 1) if total > 0 else 0.0
 
-    total = len(df)
-    hw_hrs = int(df['is_heatwave'].sum())
+    total  = len(df)
+    hw_hrs = int(base_df['is_heatwave'].sum())
 
-    # Label for sub-title of heatwave card
-    if month == 0:
+    # Period label for card sub-titles
+    if date:
+        period_label = date
+    elif month == 0:
         period_label = 'Full Year 2021'
     else:
         period_label = pd.Timestamp(2021, month, 1).strftime('%B 2021')
@@ -253,12 +275,21 @@ def api_risk_monitor():
     view  = request.args.get('view',  'yearly')
     month = request.args.get('month', 1, type=int)
     date  = request.args.get('date',  None)
+    mode  = request.args.get('mode',  'all')   # all | normal | heatwave
 
-    df = DF.copy()
+    # Always restrict to 2021
+    df = DF[DF['datetime'].dt.year == 2021].copy()
+
     if view == 'monthly':
         df = df[df['datetime'].dt.month == month]
     elif view == 'daily' and date:
         df = df[df['datetime'].dt.strftime('%Y-%m-%d') == date]
+
+    # Apply condition filter AFTER date filter
+    if mode == 'heatwave':
+        df = df[df['is_heatwave'] == 1]
+    elif mode == 'normal':
+        df = df[df['is_heatwave'] == 0]
 
     df = df.copy()
     df['margin_dlr_pct']  = ((df['dlr_calculated'] - df['Load']) / df['dlr_calculated'] * 100).round(2)

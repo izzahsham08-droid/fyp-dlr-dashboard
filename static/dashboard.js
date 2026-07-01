@@ -54,9 +54,18 @@ async function fetchJSON(url) {
 
 // ── KPI cards ──────────────────────────────────────────────
 async function loadSummary() {
-  // Pass current month + mode so cards reflect the same filter as the chart
-  const url = `/api/summary?month=${currentMonth}&mode=${currentMode}`;
-  const d   = await fetchJSON(url);
+  // Build URL that matches exactly what the chart is showing:
+  //   daily   → send date=   so backend filters to that specific day
+  //   monthly → send month=  so backend filters to that month
+  //   yearly  → send month=0 for full year
+  let summaryUrl;
+  if (monView === 'daily' && monDate) {
+    summaryUrl = `/api/summary?date=${encodeURIComponent(monDate)}&mode=${currentMode}`;
+  } else {
+    const m = (monView === 'monthly') ? monMonth : 0;
+    summaryUrl = `/api/summary?month=${m}&mode=${currentMode}`;
+  }
+  const d = await fetchJSON(summaryUrl);
 
   // Helper: format a value that may be null (e.g. no heatwave hours in a cool month)
   const fmtA = v => v != null ? v + ' <span class="kpi-unit">A</span>' : '— <span class="kpi-unit">A</span>';
@@ -95,17 +104,30 @@ function setText(id, html) {
 
 // ── Main ampacity chart — Plotly, full hourly detail on daily view ───────────
 async function loadTimeSeries() {
+  // Flash a brief loading state so user sees the chart is refreshing
+  const chartDiv = document.getElementById('mon-plotly-chart');
+  if (chartDiv) {
+    try { Plotly.purge('mon-plotly-chart'); } catch(e) {}
+    chartDiv.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:13px;font-family:sans-serif">Loading…</div>';
+  }
+
   // Build API URL based on view mode
   let apiUrl;
+  // When a condition filter is active (normal/heatwave), use HOURLY resolution
+  // so filtered points are clearly visible. Daily avg hides the filter effect.
+  // Hourly resolution only for yearly view with active condition filter.
+  // Monthly view always uses daily average so all conditions are comparable.
+  const useHourly = (currentMode !== 'all') && (monView === 'yearly');
+
   if (monView === 'yearly') {
-    apiUrl = `/api/timeseries?month=0&mode=${currentMode}&resample=D`;
+    apiUrl = `/api/timeseries?month=0&mode=${currentMode}&resample=${useHourly ? 'H' : 'D'}`;
     currentMonth = 0;
   } else if (monView === 'monthly') {
-    apiUrl = `/api/timeseries?month=${monMonth}&mode=${currentMode}&resample=D`;
+    apiUrl = `/api/timeseries?month=${monMonth}&mode=${currentMode}&resample=${useHourly ? 'H' : 'D'}`;
     currentMonth = monMonth;
   } else {
     // daily — use risk_monitor API for full hourly resolution
-    apiUrl = `/api/risk_monitor?view=daily&date=${encodeURIComponent(monDate)}`;
+    apiUrl = `/api/risk_monitor?view=daily&date=${encodeURIComponent(monDate)}&mode=${currentMode}`;
   }
 
   const raw = await fetchJSON(apiUrl);
@@ -133,12 +155,68 @@ async function loadTimeSeries() {
   const ta           = d.ta;
   const n = labels.length;
 
+  // ── Guard: no data for this filter combination ───────────────────────
+  if (n === 0) {
+    // Build the period name for the title
+    const monthNames = ['','January','February','March','April','May','June',
+                        'July','August','September','October','November','December'];
+    const periodName = monView === 'daily'   ? monDate :
+                       monView === 'monthly' ? (monthNames[monMonth] + ' 2021') :
+                       'Full Year 2021';
+
+    // Update chart title
+    const titleEl2 = document.getElementById('mon-chart-title');
+    if (titleEl2) titleEl2.textContent = `Ampacity — ${periodName} · No data for this filter`;
+
+    // Build a clear, specific no-data message
+    let noDataMsg, noDataSub;
+    if (currentMode === 'heatwave') {
+      noDataMsg = 'No Heatwave (Ta ≥ 32°C) data for the selected period.';
+      noDataSub = monView === 'daily'
+        ? 'Try selecting a different date with heatwave hours (e.g. 2021-02-04).'
+        : 'Try selecting a different month with heatwave hours.';
+    } else if (currentMode === 'normal') {
+      noDataMsg = 'No Normal (Ta < 32°C) data for the selected period.';
+      noDataSub = 'All hours in this period are heatwave hours. Try selecting a different period.';
+    } else {
+      noDataMsg = 'No data available for the selected period.';
+      noDataSub = 'Try selecting a different date, month, or condition.';
+    }
+
+    // Replace Loading… with a plain HTML message — guaranteed to clear the div
+    const chartDiv = document.getElementById('mon-plotly-chart');
+    if (chartDiv) {
+      chartDiv.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+                    height:480px;text-align:center;color:#64748b;font-family:sans-serif;">
+          <div style="font-size:38px;margin-bottom:16px;">📭</div>
+          <div style="font-size:15px;font-weight:600;color:#334155;margin-bottom:8px;">
+            ${noDataMsg}
+          </div>
+          <div style="font-size:13px;color:#94a3b8;max-width:380px;line-height:1.6;">
+            ${noDataSub}
+          </div>
+        </div>`;
+    }
+    return;
+  }
+
   // Update chart title
   const titleEl = document.getElementById('mon-chart-title');
   if (titleEl) {
-    if (monView === 'daily')   titleEl.textContent = 'Ampacity — ' + monDate + ' (Hourly)';
-    else if (monView === 'monthly') titleEl.textContent = 'Ampacity — ' + document.getElementById('mon-month-sel').options[document.getElementById('mon-month-sel').selectedIndex].text + ' 2021 (Daily avg)';
-    else titleEl.textContent = 'Ampacity — Full Year 2021 (Daily avg)';
+    const condLabel = currentMode === 'heatwave' ? ' · Heatwave hours only (Ta ≥ 32°C)' :
+                      currentMode === 'normal'   ? ' · Normal hours only (Ta < 32°C)'   : '';
+    const resLabel  = (monView === 'daily')   ? ' (Hourly)'    :
+                      (monView === 'monthly') ? ' (Daily avg)' :
+                      useHourly              ? ' (Hourly)'    : ' (Daily avg)';
+    const mnNames   = ['','January','February','March','April','May','June',
+                       'July','August','September','October','November','December'];
+    if (monView === 'daily')
+      titleEl.textContent = `Ampacity — ${monDate}${resLabel}${condLabel}`;
+    else if (monView === 'monthly')
+      titleEl.textContent = `Ampacity — ${mnNames[monMonth] || ''} 2021${resLabel}${condLabel}`;
+    else
+      titleEl.textContent = `Ampacity — Full Year 2021${resLabel}${condLabel}`;
   }
 
   // Build hover text
@@ -149,22 +227,51 @@ async function loadTimeSeries() {
   }
   function fv(v, dp=1) { return v == null ? '—' : (+v).toFixed(dp); }
 
-  const hoverText = labels.map((lbl, i) => [
-    `<b>${lbl}</b>`,
-    `─────────────────────`,
-    `DLR Calculated : <b>${fv(dlr_calc[i])} A</b>`,
-    `DLR Sensor     : <b>${fv(dlr_sensor[i])} A</b>`,
-    `DLR Forecast   : <b>${fv(dlr_forecast[i])} A</b>`,
-    `SLR (Fixed)    : <b>1434 A</b>`,
-    `─────────────────────`,
-    `Wind Speed     : ${fv(wind_speed ? wind_speed[i] : null, 2)} m/s`,
-    `Wind Direction : ${fv(wind_dir ? wind_dir[i] : null, 0)}° (${toCard(wind_dir ? wind_dir[i] : null)})`,
-    `Ambient Temp   : ${fv(ta ? ta[i] : null, 1)} °C`,
-  ].join('<br>'));
+  // Colour helpers for DLR Monitoring hover
+  function dlrCondColour(taVal) {
+    if (taVal == null) return '#94a3b8';
+    return taVal >= 32 ? '#dc2626' : '#16a34a';
+  }
+  function dlrCondLabel(taVal) {
+    if (taVal == null) return '⬜ Unknown';
+    return taVal >= 32 ? '🔴 Heatwave (Ta ≥ 32°C)' : '🟢 Normal (Ta < 32°C)';
+  }
+  function dlrVsSlrStatus(dlrVal) {
+    if (dlrVal == null) return { colour: '#94a3b8', label: '— No data' };
+    const pct = ((dlrVal - SLR) / SLR * 100).toFixed(1);
+    if (dlrVal >= SLR * 1.40) return { colour: '#16a34a', label: `🟢 +${pct}% above SLR  (≥140%)` };
+    if (dlrVal >= SLR * 1.30) return { colour: '#22c55e', label: `🟢 +${pct}% above SLR  (≥130%)` };
+    if (dlrVal >= SLR * 1.20) return { colour: '#84cc16', label: `🟡 +${pct}% above SLR  (≥120%)` };
+    if (dlrVal >= SLR * 1.10) return { colour: '#eab308', label: `🟡 +${pct}% above SLR  (≥110%)` };
+    if (dlrVal >= SLR)        return { colour: '#f97316', label: `🟠 +${pct}% above SLR` };
+    return                           { colour: '#dc2626', label: `🔴 ${pct}% BELOW SLR` };
+  }
+
+  const hoverText = labels.map((lbl, i) => {
+    const taVal  = ta ? ta[i] : null;
+    const dlrC   = dlr_calc[i];
+    const status = dlrVsSlrStatus(dlrC);
+    return [
+      `<b>${lbl}</b>`,
+      `<span style="color:${dlrCondColour(taVal)}">${dlrCondLabel(taVal)}</span>`,
+      `─────────────────────────────`,
+      `<span style="color:#2563eb">●</span> DLR Calculated : <b style="color:${status.colour}">${fv(dlrC)} A</b>`,
+      `<span style="color:#16a34a">●</span> DLR Sensor     : <b>${fv(dlr_sensor[i])} A</b>`,
+      `<span style="color:#9333ea">●</span> DLR Forecast   : <b>${fv(dlr_forecast[i])} A</b>`,
+      `<span style="color:#dc2626">—</span> SLR (Fixed)    : <b style="color:#dc2626">1434 A</b>`,
+      `─────────────────────────────`,
+      `  DLR vs SLR   : <span style="color:${status.colour}">${status.label}</span>`,
+      `─────────────────────────────`,
+      `<span style="color:#0891b2">●</span> Wind Speed     : ${fv(wind_speed ? wind_speed[i] : null, 2)} m/s`,
+      `<span style="color:#f97316">●</span> Ambient Temp   : <span style="color:${dlrCondColour(taVal)}">${fv(taVal, 1)} °C</span>`,
+      `  Wind Direction : ${fv(wind_dir ? wind_dir[i] : null, 0)}° (${toCard(wind_dir ? wind_dir[i] : null)})`,
+    ].join('<br>');
+  });
 
   // SLR % reference lines — above SLR to show DLR capacity gain
+  const x0 = labels[0] ?? '', xN = labels[n-1] ?? '';
   const slrPctLines = [110, 120, 130, 140].map(pct => ({
-    x: [labels[0], labels[n-1]], y: [SLR*pct/100, SLR*pct/100],
+    x: [x0, xN], y: [SLR*pct/100, SLR*pct/100],
     name: `${pct}% SLR (${(SLR*pct/100).toFixed(0)} A)`,
     type: 'scatter', mode: 'lines',
     line: { color: '#94a3b8', width: 1, dash: 'dot' },
@@ -193,7 +300,7 @@ async function loadTimeSeries() {
       hoverinfo: 'skip',
     },
     {
-      x: [labels[0], labels[n-1]], y: [SLR, SLR],
+      x: [x0, xN], y: [SLR, SLR],
       name: 'SLR = 1434 A', type: 'scatter', mode: 'lines',
       line: { color: '#dc2626', width: 2, dash: 'dash' },
       hoverinfo: 'skip',
@@ -245,21 +352,23 @@ async function loadTimeSeries() {
         text:'SLR = 1434 A', showarrow:false,
         font:{ color:'#dc2626', size:10 }, xanchor:'left' },
       ...[110, 120, 130, 140].map(pct => ({
-        xref:'paper', yref:'y', x:1.002, y:SLR * pct / 100,
+        xref:'paper', yref:'y', x: n > 0 ? 1.002 : -1, y:SLR * pct / 100,
         text:`${pct}% (${(SLR * pct / 100).toFixed(0)} A)`,
         showarrow:false, font:{ color:'#94a3b8', size:9 }, xanchor:'left',
       })),
     ],
   };
 
+  // Purge first — guarantees a full visual redraw when filter/date changes
+  try { Plotly.purge('mon-plotly-chart'); } catch(e) {}
   try {
-    Plotly.react('mon-plotly-chart', traces, layout,
+    Plotly.newPlot('mon-plotly-chart', traces, layout,
       { responsive: true,
         displayModeBar: true,
         modeBarButtonsToRemove: ['lasso2d', 'select2d'],
         displaylogo: false,
         scrollZoom: true });
-  } catch(e) { console.error('Plotly.react mon chart failed:', e); }
+  } catch(e) { console.error('mon-plotly-chart render failed:', e); }
 
   // Update secondary Chart.js charts using the same normalised data
   // For daily: d already has all fields; for yearly/monthly: re-fetch at correct resolution
@@ -291,7 +400,36 @@ function buildSecondaryCharts(d) {
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0f172a',
+          titleColor: '#e2e8f0',
+          bodyColor: '#cbd5e1',
+          borderColor: '#334155',
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            title: ctx => ctx[0].label,
+            beforeBody: ctx => {
+              const ta = ctx.find(c => c.dataset.label.includes('Ta'))?.parsed.y;
+              if (ta == null) return '';
+              const hw = ta >= 32;
+              return hw ? '🔴 Heatwave (Ta ≥ 32°C)' : '🟢 Normal (Ta < 32°C)';
+            },
+            label: ctx => {
+              const v    = ctx.parsed.y?.toFixed(1);
+              const isTa = ctx.dataset.label.includes('Ta');
+              const isTs = ctx.dataset.label.includes('Ts');
+              const dot  = isTa ? '🟠' : '🔴';
+              let tag = '';
+              if (isTa) tag = ctx.parsed.y >= 32 ? ' ⚠ HEATWAVE' : '';
+              if (isTs) tag = ctx.parsed.y >= 75 ? ' ⚠ NEAR LIMIT' : ctx.parsed.y >= 60 ? ' ⚠ WARNING' : '';
+              return ` ${dot} ${ctx.dataset.label.split('(')[0].trim()}: ${v} °C${tag}`;
+            },
+          },
+        },
+      },
       scales: {
         x: { grid: gridOpts(), ticks: { ...tickOpts(), maxTicksLimit: 8 } },
         y: { grid: gridOpts(), ticks: tickOpts(),
@@ -315,7 +453,44 @@ function buildSecondaryCharts(d) {
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0f172a',
+          titleColor: '#e2e8f0',
+          bodyColor: '#cbd5e1',
+          borderColor: '#334155',
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            title: ctx => ctx[0].label,
+            beforeBody: ctx => {
+              const ws = ctx.find(c => c.dataset.label.includes('Wind'))?.parsed.y;
+              if (ws == null) return '';
+              if (ws >= 3.0) return '🟢 High wind — strong cooling effect';
+              if (ws >= 1.5) return '🟡 Moderate wind — adequate cooling';
+              if (ws >= 0.5) return '🟠 Low wind — reduced cooling';
+              return '🔴 Calm — minimal convective cooling';
+            },
+            label: ctx => {
+              const v = ctx.parsed.y?.toFixed(2);
+              const isWind = ctx.dataset.label.includes('Wind');
+              const isLoad = ctx.dataset.label.includes('Load');
+              if (isWind) {
+                const ws  = ctx.parsed.y;
+                const tag = ws >= 3.0 ? ' 🟢' : ws >= 1.5 ? ' 🟡' : ws >= 0.5 ? ' 🟠' : ' 🔴';
+                return ` 🔵 Wind Speed : ${v} m/s${tag}`;
+              }
+              if (isLoad) {
+                const pct = (ctx.parsed.y / 1434 * 100).toFixed(1);
+                const tag = ctx.parsed.y > 1434 ? ' 🔴 OVER SLR' : ctx.parsed.y > 1147 ? ' 🟠 >80% SLR' : ' 🟢';
+                return ` 🟣 Load Current : ${(+v).toFixed(1)} A  (${pct}% SLR)${tag}`;
+              }
+              return ` ⬜ ${ctx.dataset.label}: ${v}`;
+            },
+          },
+        },
+      },
       scales: {
         x:  { grid: gridOpts(), ticks: { ...tickOpts(), maxTicksLimit: 8 } },
         y:  { grid: gridOpts(), ticks: tickOpts(), position: 'left',
@@ -345,7 +520,28 @@ function buildSecondaryCharts(d) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0f172a',
+          titleColor: '#e2e8f0',
+          bodyColor: '#cbd5e1',
+          borderColor: '#334155',
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            title: ctx => ctx[0].label,
+            label: ctx => {
+              const v   = ctx.parsed.y;
+              const abs = Math.abs(v).toFixed(1);
+              const pct = Math.abs(v / 1434 * 100).toFixed(1);
+              if (v > 0) return ` 🟢 DLR exceeds SLR by  +${abs} A  (+${pct}%)`;
+              if (v < 0) return ` 🔴 DLR below SLR by  −${abs} A  (−${pct}%)`;
+              return ' ⬜ DLR equals SLR (0 A)';
+            },
+          },
+        },
+      },
       scales: {
         x: { grid: gridOpts(), ticks: { ...tickOpts(), maxTicksLimit: 10 } },
         y: { grid: gridOpts(), ticks: tickOpts(),
@@ -792,11 +988,11 @@ function buildPlotlyChart(d) {
     return [
       `<b>${lbl}</b>`,
       `─────────────────────────────`,
-      `Load Current      : <b>${fmt(d.load[i],1)} A</b>`,
-      `SLR (Fixed)       : <b>1434 A</b>`,
-      `DLR Calculated    : <b>${fmt(d.dlr_calc[i],1)} A</b>`,
-      `DLR Sensor        : <b>${fmt(d.dlr_sensor[i],1)} A</b>`,
-      `DLR Forecast      : <b>${fmt(d.dlr_forecast[i],1)} A</b>`,
+      `<span style="color:#2563eb">●</span> Load Current      : <b>${fmt(d.load[i],1)} A</b>`,
+      `<span style="color:#dc2626">—</span> SLR (Fixed)       : <b style="color:#dc2626">1434 A</b>`,
+      `<span style="color:#16a34a">●</span> DLR Calculated    : <b>${fmt(d.dlr_calc[i],1)} A</b>`,
+      `<span style="color:#ea580c">●</span> DLR Sensor        : <b>${fmt(d.dlr_sensor[i],1)} A</b>`,
+      `<span style="color:#9333ea">●</span> DLR Forecast      : <b>${fmt(d.dlr_forecast[i],1)} A</b>`,
       `─────────────────────────────`,
       `Ambient Temp      : ${fmt(d.ta[i],1)} °C`,
       `Wind Speed        : ${fmt(d.wind_speed[i],2)} m/s`,
@@ -813,7 +1009,9 @@ function buildPlotlyChart(d) {
       `DLR Sensor vs SLR : ${fmt(d.dlrs_vs_slr_a[i],1)} A  (${fmt(d.dlrs_vs_slr_pct[i],1)} %)`,
       `DLR Fore vs SLR   : ${fmt(d.dlrf_vs_slr_a[i],1)} A  (${fmt(d.dlrf_vs_slr_pct[i],1)} %)`,
       `─────────────────────────────`,
-      `Risk Level        : <b style="color:${riskColor(d.risk[i])}">${d.risk[i]}</b>`,
+      `─────────────────────────────`,
+      `Risk Level        : <b style="color:${riskColor(d.risk[i])}">${riskEmoji(d.risk[i])} ${d.risk[i]}</b>`,
+      `Condition         : <span style="color:${d.ta[i]>=32?'#dc2626':'#16a34a'}">${d.ta[i]>=32?'🔴 Heatwave (Ta ≥ 32°C)':'🟢 Normal (Ta < 32°C)'}</span>`,
     ].join('<br>');
   });
 
@@ -1008,6 +1206,10 @@ function riskColor(r) {
   const m = { 'Safe':'#16a34a','Caution':'#d97706','Risky':'#ea580c','Very Risky':'#dc2626' };
   return m[r] || '#64748b';
 }
+function riskEmoji(r) {
+  const m = { 'Safe':'🟢','Caution':'🟡','Risky':'🟠','Very Risky':'🔴' };
+  return m[r] || '⬜';
+}
 
 // ═══════════════════════════════════════════════════════════
 // WIND VELOCITY & DIRECTION ANALYSIS — Polar Scatter (Plotly)
@@ -1082,17 +1284,18 @@ async function loadWindAnalysis() {
   const hoverText = d.wind_speed.map((_, i) => [
     `<b>${d.datetime[i]}</b>`,
     `─────────────────────────`,
-    `Wind Speed     : <b>${fv(d.wind_speed[i], 2)} m/s</b>`,
-    `Wind Direction : <b>${fv(d.wind_dir[i], 0)}° (${toCard(d.wind_dir[i])})</b>`,
+    `<span style="color:#0891b2">●</span> Wind Speed     : <b>${fv(d.wind_speed[i], 2)} m/s</b>`,
+    `  Wind Direction : <b>${fv(d.wind_dir[i], 0)}° (${toCard(d.wind_dir[i])})</b>`,
     `─────────────────────────`,
-    `DLR Calculated : ${fv(d.dlr_calc[i], 1)} A`,
-    `DLR Sensor     : ${fv(d.dlr_sensor[i], 1)} A`,
-    `DLR Forecast   : ${fv(d.dlr_fore[i], 1)} A`,
+    `<span style="color:#2563eb">●</span> DLR Calculated : ${fv(d.dlr_calc[i], 1)} A`,
+    `<span style="color:#ea580c">●</span> DLR Sensor     : ${fv(d.dlr_sensor[i], 1)} A`,
+    `<span style="color:#9333ea">●</span> DLR Forecast   : ${fv(d.dlr_fore[i], 1)} A`,
     `─────────────────────────`,
-    `Ambient Temp   : ${fv(d.ta[i], 1)} °C`,
-    `Conductor Temp : ${fv(d.ts[i], 1)} °C`,
-    `Load Current   : ${fv(d.load[i], 1)} A`,
-    `Risk Level     : <b style="color:${windRiskColour(d.risk[i])}">${d.risk[i]}</b>`,
+    `<span style="color:#f97316">●</span> Ambient Temp   : ${fv(d.ta[i], 1)} °C`,
+    `<span style="color:#dc2626">●</span> Conductor Temp : ${fv(d.ts[i], 1)} °C`,
+    `<span style="color:#7c3aed">●</span> Load Current   : ${fv(d.load[i], 1)} A`,
+    `Risk Level     : <b style="color:${windRiskColour(d.risk[i])}">${riskEmoji(d.risk[i])} ${d.risk[i]}</b>`,
+    `Condition      : <span style="color:${d.ta[i]>=32?'#dc2626':'#16a34a'}">${d.ta[i]>=32?'🔴 Heatwave':'🟢 Normal'}</span>`,
   ].join('<br>'));
 
   // ── Plotly polar scatter trace ─────────────────────────
